@@ -1,7 +1,0 @@
-{
-  "timestamp": "20260225_161448",
-  "experiments": [
-    "sota"
-  ],
-  "note": "Results from physics-informed Franka Panda grasp simulation. Literature baselines are from published papers, NOT simulated."
-}

@@ -20,6 +20,19 @@ results/
 LIBERO/
 .libero/
 *.zip
+.history/
+wget-log
+**/memory_store/
+*.sqlite3
+
+# Paper artifacts
+*.aux
+*.log
+*.out
+*.blg
+*.bbl
+*.fdb_latexmk
+*.fls
 
 # OS generated
 .DS_Store

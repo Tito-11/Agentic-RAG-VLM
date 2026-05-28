@@ -1,185 +1,150 @@
 # Agentic-VLA
 
-**Agentic-VLA: A Reflective Multi-Agent Architecture for Enhancing VLA Models in Long-Horizon Tasks**
+`Agentic-VLA` 是一个面向长程具身操作任务的研究型项目：在保留强 `VLA` 低层执行器的前提下，引入按需触发的高层 `VLM planner`、失败分类、恢复闭环与轻量验证机制，提升 `LIBERO` 长程任务上的鲁棒性、可解释性与部署可行性。
 
----
+本项目当前聚焦的不是“再训练一个更大的动作模型”，而是验证：
 
-## Overview
+- 强 `fine-tuned VLA` 是否仍需要外挂式 `Agentic` 机制
+- `planner-on-demand` 是否能在资源受限条件下工作
+- `Transition / Memory / Critic / Router / Verifier` 这类模块如何以可审计方式增强长程执行
 
-This repository contains the code and experimental framework for **Agentic-VLA** (formerly LAMA-VLM / Agentic RAG-VLM), a unified framework for robotic manipulation that bridges semantic understanding and physical execution. 
+## 项目亮点
 
-To address the limitations of pure end-to-end VLA models (which lack long-horizon planning and fault reflection), we have upgraded the system to **Agentic-VLA**. This architecture integrates **Retrieval-Augmented Generation (RAG)**, **Vision-Language Models (VLMs)**, **lifelong learning**, and **multi-agent state orchestration** (System 2) as a robust wrapper around high-frequency VLA execution experts (System 1).
+- **真实评测链路**：所有主结论都来自官方 `LIBERO` 模拟器中的真实 rollout，而不是 mock、离线估计或硬编码成功率。
+- **强基线设定**：使用 `pi0.5 / pi05_libero` 作为默认动作专家，而不是弱得不公平的 `base model`。
+- **Agentic 增强而非替换**：在 `VLA` 之外加入 `Transition`、`GraphRAG + Memory`、`Critic/Retry`、结构化 planner 和验证闭环。
+- **面向论文与部署**：强调可追溯结果、明确的失败边界、模块化代码结构与可复现实验入口。
 
-<p align="center">
-  <img src="paper/figures/fig.1.png" alt="System Overview" width="800"/>
-</p>
+## 当前系统
 
-### Agentic-VLA Architecture (Heterogeneous Dual-System)
+- **Low-level executor**：`pi0.5 / OpenPI`
+- **High-level planner**：`Qwen3-VL-8B-Instruct`
+- **Planner mode**：`on-demand`
+- **Control target**：`10Hz`
+- **Planner output**：结构化 JSON，而不是自由文本
+- **关键机制**：
+  - `failure taxonomy`: `stall / collision / misgrasp / slip`
+  - `subgoal + FSM + verifier`
+  - `cooldown / cache / max_plans_per_episode`
+  - `Transition / Critic / GraphRAG-Memory`
+  - `Router + Expert + Verifier` 的 `MoE v1` 骨架
 
-Our framework operates on a **Dual-Model Architecture**, seamlessly bridging a "Slow Thinking" pure VLM brain with a "Fast Thinking" VLA cerebellum:
+## 已完成的核心实验
 
-1. **System 2 Thinking Layer (External VLM Brain / Qwen3-VL-8B):** A pure, highly-capable Vision-Language Model acts as the cognitive brain. Untainted by robot action-finetuning, it retains profound spatial and logical reasoning. Using Topology-Aware Graph RAG, it analyzes the current perspective, extracting `supports` and `occluded_by` relations to generate macro instructions, safe anti-collision yaw angles, and explicit state transitions.
-2. **Visual Prompting & Masking (Inspired by $VLA^2$):** The VLM Brain generates environmental parsing masks (e.g., bounding boxes or transparent occlusion masks) to eliminate texture biases and enable the underlying VLA to handle Out-of-Distribution (OOD) unseen concepts.
-3. **System 1 Execution Layer (VLA Cerebellum / Frozen pi0):** The semantic instructions and visual prompts are routed to the frozen `pi0` foundation model. Operating strictly as a "cerebellum", `pi0` focuses purely on decoding these macro-commands into continuous 6-DoF Action Chunks to directly drive the robot arms with high precision.
-4. **Reflective Loop (Critic Agent & Evo-KAM):** Post-execution, the VLM Brain evaluates execution states via visual and force feedback. If an error occurs (e.g., collision, slip), it intercepts the failure, updates ChromaDB memory via Evolutionary Knowledge Memory (Evo-KAM), and triggers re-planning—achieving a 100% recovery rate on soft failures that pure VLAs cannot handle.
+以下结果均来自真实 `LIBERO` rollout，并已在项目日志中做过审计记录。
 
-### Key Components
+### 强基线
 
-1. **Topo-Graph RAG (Topological-Aware Graph RAG):** Eliminates target-centric retrieval by extracting subgraphs containing `supports`, `occluded_by`, and `next_to` edges. Enables semantic subgraph isomorphism matching in a high-dimensional vector space.
-2. **Evo-KAM (Evolutionary Knowledge & Affordance Memory):** A lifelong memory system powered by ChromaDB. Uses a conflict threshold mechanism to dynamically decay reliability weights and evolve prescriptive actions based on VLM reflections.
-3. **V-PCC (Visual-Progressive Context Compression):** A micro-compact mechanism inspired by SnapKV, dynamically discarding redundant image frames and condensing historical text logs to prevent context explosion during long-horizon manipulation.
-4. **DAG-EAM (Directed Acyclic Graph Explicit Action Modeling):** Integrates LangGraph to orchestrate explicit state transitions between specialized expert agents (`Vision`, `Plan`, `Execute`, `Critic`), allowing safe conditional routing, retroactive backtracking, and persistent action snapshots.
+- `pi05_libero` on `libero_spatial`: `99.0% (198/200)`
+- `pi05_libero` on `libero_object`: `98.0% (196/200)`
+- `pi05_libero` on `libero_goal`: `98.0% (196/200)`
+- `pi05_libero` on `libero_10`: `90.0% (180/200)`
+- 关键弱点：`libero_10 Task 8 = 55%`
 
----
+### 当前主结果
 
-## Project Structure
+- `Full-Agentic-VLA-Refined` on `libero_10`: `92.5% (185/200)`
+- 相比强基线：`+2.5` 个百分点
+- 关键弱点修复：
+  - `Task 8`: `55% -> 75%`
+- 当前观察到的主要收益来源：
+  - `Transition` 是最稳定的增益模块
+  - `GraphRAG + Memory` 在部分复杂任务上有帮助
+  - `Critic` 当前更像检查器，而不是已被完全证明的强恢复模块
 
-```
+### 结果边界
+
+- `pi0_base` 在当前 `LIBERO` 真实链路上的先导结果很弱，不能作为论文主基线。
+- `Vision Prompt` 已做过接入与补充实验，但不再作为主论文创新点。
+- 当前主实验结论应保守表述为：
+  - `Agentic-VLA` 在强 `pi0.5` baseline 上取得了可审计但不夸张的真实增益。
+
+## 仓库结构
+
+```text
 Agentic-VLA/
-├── robot_grasp_rag/          # Core framework for autonomous manipulation
-│   ├── agent/                # Multi-Agent StateGraph pipeline
-│   │   └── optimized_multi_agent.py
-│   ├── core/                 # Knowledge base & RAG implementations
-│   │   ├── graph_rag.py
-│   │   └── memory_and_context.py
-│   ├── knowledge_base/       # ChromaDB Vector store & grasp memory
-│   │   └── vector_store.py
-│   ├── vla_model/            # Frozen VLA integration (OpenPI/Pi0)
-│   │   └── pi0_executor.py
-│   ├── utils/                # Utilities (pose representation, logging)
-│   ├── config/config.yaml    # System configuration for VLM and SAPIEN
-│   ├── scripts/              # Evaluation & benchmarking scripts
-│   │   └── run_lama_benchmark.py
-│   └── run_optimized_simulation.py # Main deployment simulation loop
-├── quantization/             # VLM quantization tools (FP8/INT4 capabilities)
-├── results/                  # Generated benchmark tables & execution traces
-├── paper/                    # LaTeX source & PAPER_FRAMEWORK
-├── README.md                 # System overview and deployment guidelines
-└── LICENSE
+├── README.md
+├── EXPERIMENT_LOG.md
+├── RESULTS_EVIDENCE_GUIDE.md
+├── AGENT_LEVEL_MOE_PLAN.md
+├── scripts/
+│   ├── run_agentic_vla_libero.py
+│   ├── launch_full_libero10.sh
+│   ├── prepare_libero_norm_stats.py
+│   └── download_qwen3_vl.py
+├── openpi/
+│   ├── scripts/serve_policy.py
+│   └── src/openpi/policies/agentic_policy.py
+├── agentic_vla/
+│   └── ...
+└── paper/
+    └── Agentic-VLA/
 ```
 
----
+## 关键代码入口
 
-## Installation
+- 真实 `LIBERO` 评测入口：`scripts/run_agentic_vla_libero.py`
+- policy server：`openpi/scripts/serve_policy.py`
+- server 侧 agentic planner 协议：`openpi/src/openpi/policies/agentic_policy.py`
+- `Agent-level MoE v1` 设计文档：`AGENT_LEVEL_MOE_PLAN.md`
 
-### Prerequisites
+## 文档导航
 
-- Python >= 3.10
-- CUDA >= 12.0
-- PyTorch >= 2.0
+- 结果与证据边界：`RESULTS_EVIDENCE_GUIDE.md`
+- 按时间排序的真实实验日志：`EXPERIMENT_LOG.md`
+- 当前 `MoE v1`/`Router + Expert + Verifier` 设计：`AGENT_LEVEL_MOE_PLAN.md`
+- 论文主稿目录：`paper/Agentic-VLA/`
 
-### Setup
+## 运行概览
+
+### 1. 准备 OpenPI / LIBERO 环境
+
+优先参考：
+
+- `openpi/README.md`
+- `openpi/examples/libero/README.md`
+
+### 2. 启动 policy server
 
 ```bash
-# Clone the repository
-git clone https://github.com/YOUR_USERNAME/Agentic-VLA.git
-cd Agentic-VLA
-
-# Install dependencies (requires LangGraph and ChromaDB capabilities)
-pip install -r robot_grasp_rag/requirements.txt
-
-# The project uses OpenPI (physical-intelligence/pi0) base model
-# Use the automated script to download the official pi0_base weights via Google Cloud Storage
-python scripts/download_pi0.py
-# Weights will be automatically configured to: weights/openpi-assets/checkpoints/pi0_base
+PYTHONPATH=/path/to/openpi/src python openpi/scripts/serve_policy.py --env LIBERO --port 8000
 ```
 
-### Configuration
-
-Edit `robot_grasp_rag/config/config.yaml` to set your model path:
-
-```yaml
-vlm:
-  model_path: "/path/to/your/Qwen3-VL-8B"
-```
-
----
-
-## Usage
-
-### Run Full Experiments
+若启用 agentic planner：
 
 ```bash
-# Run the Interactive Agentic-VLA Framework (Multi-Agent StateGraph)
-LD_PRELOAD=/home/fudan222/miniconda3/envs/roboagent/lib/libstdc++.so.6 \
-python -m robot_grasp_rag.run_optimized_simulation
+PYTHONPATH=/path/to/openpi/src python openpi/scripts/serve_policy.py \
+  --env LIBERO \
+  --port 8000 \
+  --agentic \
+  --planner-model /path/to/Qwen3-VL-8B-Instruct
 ```
 
-### Run Agentic-VLA Ablation Benchmarks (LIBERO)
-
-Validates Agentic-VLA across extreme long-horizon tracks, injecting state-gap collisions and OOD concepts.
+### 3. 运行 LIBERO 评测
 
 ```bash
-# Execute the comprehensive benchmarking suite
-conda run -n roboagent python scripts/run_agentic_vla_libero.py
+python scripts/run_agentic_vla_libero.py \
+  --task-suite libero_10 \
+  --trials 20 \
+  --host 127.0.0.1 \
+  --port 8000 \
+  --transition \
+  --graph-rag \
+  --critic \
+  --agentic-planner
 ```
 
----
+## 当前研究定位
 
-## Experimental Results (LIBERO Benchmark 2026-05)
+- **主 benchmark**：`LIBERO`, 尤其是 `libero_10`
+- **主 baseline**：`pi0.5 / pi05_libero`
+- **主目标**：
+  - 资源受限下的 `Agentic` 框架设计
+  - `VLA` 推理优化与实时性统计
+  - benchmark 与后续真机部署可行性
 
-Our method is evaluated on the LIBERO long-horizon multi-task benchmark. To demonstrate the necessity of our System 2 (Agentic) architecture, we conduct rigorous ablation studies against the state-of-the-art pure end-to-end VLA model (pi0).
+## 说明
 
-| Model Configuration | Task Success Rate | Recovery Rate |
-| :--- | :---: | :---: |
-| **Base VLA (pi0)** | 10.0% | 0.0% (No Critic) |
-| **pi0 + Vision Agent** | 15.0% | 0.0% |
-| **pi0 + Vision + Planner Agent** | 75.0% | 0.0% |
-| **Agentic-VLA (pi0 + Full Agentic Framework)** | **85.0%** | **100.0% (Full Loop Recovery)** |
-
-**Key Takeaways:**
-- **Planner Agent Lift (+70%):** Eliminates State Gap collisions between atomic tasks by generating smooth transitional actions.
-- **Critic Agent Lift (+10% SR, 100% Recovery):** Converts soft physical failures (slips, non-perfect grasps) into successful task completion via self-reflective backtracking.
-
-Detailed results including OOD generalization and latency analysis are available in `results/iros2026/` and `paper/PAPER_FRAMEWORK.md`.
-
----
-
-## Changelog & Architecture Evolution
-
-This project has undergone significant evolutions from a standard RAG-VLM script to a fully distributed, VLA-integrated multi-agent system:
-
-1. **Real Physical Execution with OpenPI (2026-05):**
-   - Transferred the framework to run directly inside the real Mujoco/Robosuite physics engine provided by the LIBERO benchmark.
-   - Built a dedicated `openpi_env` to load the official `physical-intelligence/pi0_base` weights (11.2 GiB), eliminating mock execution and outputting actual robotic Action Chunks.
-   - End-to-end framework verification generates authentic ablation videos saved under `results/videos/`.
-
-2. **Agentic-VLA Framework Integration (2026-05):**
-   - **OpenPI / pi0 Execution:** Replaced traditional IK-driven execution with continuous Action Chunks generated by VLA.
-   - **$VLA^2$ Visual Prompting:** Empowered the Vision Agent to generate Bounding Box and transparent masks to guide the frozen VLA base, eliminating dependency on target texture.
-   - **Sci-VLA Long-Horizon Bridging:** Added `node_transition_agent` in LangGraph to generate safe intermediate postures between atomic tasks, preventing cascade collisions in sequential setups.
-   
-2. **Robust Multi-Agent Workflow (2026-04):**
-   - Evolved into a **MUSE/OpenClaw-like architecture** featuring `Vision Agent`, `Planning-Execution Agent`, and `Critic Agent`.
-   - Tool calls are wrapped with sub-routines requiring explicit `reason` parameters ("Why did I do this?"), drastically improving interpretability for the Critic Agent.
-
-3. **Lifelong Memory & Context Compression:**
-   - **ChromaDB Vector Store** sync in `LifelongMemoryManager` automatically updates grasp parameters based on open-vocabulary reflection when failure thresholds are hit.
-   - **Progressive Context Compression** module prevents Token explosion via textual sequence summaries ("Micro-Compact context").
-
----
-
-## Citation
-
-If you find this work useful, please cite:
-
-```bibtex
-@inproceedings{agentic-vla2026,
-  title={Agentic-VLA: A Reflective Multi-Agent Architecture for Enhancing VLA Models in Long-Horizon Tasks},
-  author={Anonymous},
-  booktitle={IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS)},
-  year={2026}
-}
-```
-
----
-
-## License
-
-This project is licensed under the Apache License 2.0 - see [LICENSE](LICENSE) for details.
-
----
-
-## Acknowledgments
-
-This project builds upon [Qwen3-VL](https://github.com/QwenLM/Qwen3-VL) for vision-language understanding and the [OpenPI](https://github.com/Physical-Intelligence/openpi) model for action generation. We thank their respective teams for their open-source contributions.
+- 仓库中仍保留部分原型代码和论文资产，用于研究复现与后续扩展。
+- 历史结果目录、权重和本地运行缓存默认不纳入 Git 跟踪。
+- 若你希望基于本仓库复现论文级结论，优先以 `scripts/` 与 `openpi/` 下的真实评测链路为准。

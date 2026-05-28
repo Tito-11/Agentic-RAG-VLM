@@ -9,7 +9,7 @@ def download_pi0():
     logger.info("Starting download of pi0_base from Google Cloud Storage...")
     
     # Add openpi to path so we can import it
-    sys.path.append("/home/fudan222/ct/LAMA-VLM/openpi/src")
+    sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "../openpi/src"))
     
     from openpi.shared import download
     

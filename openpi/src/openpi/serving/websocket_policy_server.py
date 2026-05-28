@@ -3,6 +3,7 @@ import http
 import logging
 import time
 import traceback
+from collections.abc import Callable
 
 from openpi_client import base_policy as _base_policy
 from openpi_client import msgpack_numpy
@@ -24,11 +25,13 @@ class WebsocketPolicyServer:
         host: str = "0.0.0.0",
         port: int | None = None,
         metadata: dict | None = None,
+        session_factory: Callable[[], _base_policy.BasePolicy] | None = None,
     ) -> None:
         self._policy = policy
         self._host = host
         self._port = port
         self._metadata = metadata or {}
+        self._session_factory = session_factory
         logging.getLogger("websockets.server").setLevel(logging.INFO)
 
     def serve_forever(self) -> None:
@@ -48,6 +51,7 @@ class WebsocketPolicyServer:
     async def _handler(self, websocket: _server.ServerConnection):
         logger.info(f"Connection from {websocket.remote_address} opened")
         packer = msgpack_numpy.Packer()
+        policy = self._session_factory() if self._session_factory is not None else self._policy
 
         await websocket.send(packer.pack(self._metadata))
 
@@ -58,7 +62,7 @@ class WebsocketPolicyServer:
                 obs = msgpack_numpy.unpackb(await websocket.recv())
 
                 infer_time = time.monotonic()
-                action = self._policy.infer(obs)
+                action = policy.infer(obs)
                 infer_time = time.monotonic() - infer_time
 
                 action["server_timing"] = {

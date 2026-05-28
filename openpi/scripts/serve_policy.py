@@ -2,10 +2,12 @@ import dataclasses
 import enum
 import logging
 import socket
+import threading
 
 import tyro
 
 from openpi.policies import policy as _policy
+from openpi.policies import agentic_policy as _agentic_policy
 from openpi.policies import policy_config as _policy_config
 from openpi.serving import websocket_policy_server
 from openpi.training import config as _config
@@ -54,6 +56,17 @@ class Args:
     # Specifies how to load the policy. If not provided, the default policy for the environment will be used.
     policy: Checkpoint | Default = dataclasses.field(default_factory=Default)
 
+    agentic: bool = False
+    planner_model: str = "/home/admin1/ct/Agentic-VLA/weights/Qwen3-VL-8B-Instruct"
+    planner_device: str = "cuda"
+    planner_dtype: str = "bfloat16"
+    planner_quant: str = "4bit"
+    plan_mode: str = "on_demand"
+    plan_interval: int = 20
+    plan_cooldown_steps: int = 50
+    max_plans_per_episode: int = 3
+    cache_plans: bool = True
+
 
 # Default checkpoints that should be used for each environment.
 DEFAULT_CHECKPOINT: dict[EnvMode, Checkpoint] = {
@@ -97,8 +110,9 @@ def create_policy(args: Args) -> _policy.Policy:
 
 
 def main(args: Args) -> None:
-    policy = create_policy(args)
-    policy_metadata = policy.metadata
+    base_policy = create_policy(args)
+    policy_metadata = base_policy.metadata
+    policy = base_policy
 
     # Record the policy's behavior.
     if args.record:
@@ -108,11 +122,36 @@ def main(args: Args) -> None:
     local_ip = socket.gethostbyname(hostname)
     logging.info("Creating server (host: %s, ip: %s)", hostname, local_ip)
 
+    session_factory = None
+    if args.agentic:
+        lock = threading.Lock()
+        planner = _agentic_policy.Qwen3VLPlanner(
+            model=args.planner_model,
+            device=args.planner_device,
+            torch_dtype=args.planner_dtype,
+            quant=args.planner_quant,
+        )
+        def _make_session() -> _agentic_policy.AgenticPolicy:
+            return _agentic_policy.AgenticPolicy(
+                base_policy=policy,
+                planner=planner,
+                plan_mode=args.plan_mode,
+                plan_interval=args.plan_interval,
+                plan_cooldown_steps=args.plan_cooldown_steps,
+                max_plans_per_episode=args.max_plans_per_episode,
+                cache_enabled=args.cache_plans,
+                lock=lock,
+                default_prompt=args.default_prompt,
+            )
+
+        session_factory = _make_session
+
     server = websocket_policy_server.WebsocketPolicyServer(
         policy=policy,
         host="0.0.0.0",
         port=args.port,
         metadata=policy_metadata,
+        session_factory=session_factory,
     )
     server.serve_forever()
 

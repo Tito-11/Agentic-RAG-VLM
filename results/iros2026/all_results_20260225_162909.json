@@ -1,9 +1,0 @@
-{
-  "timestamp": "20260225_162909",
-  "experiments": [
-    "ablation",
-    "scene_graph",
-    "retrieval"
-  ],
-  "note": "Results from physics-informed Franka Panda grasp simulation. Literature baselines are from published papers, NOT simulated."
-}
